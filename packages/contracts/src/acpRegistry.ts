@@ -22,6 +22,8 @@ export function officialAcpRegistryIconUrlForAgentId(
   return `https://${ACP_REGISTRY_CDN_HOSTNAME}/registry/v1/latest/${agentId}.svg`;
 }
 
+export const OH_MY_PI_ICON_URL = "https://omp.sh/favicon.svg";
+
 export function resolveOfficialAcpRegistryIconUrl(icon: string | null | undefined): string | null {
   if (!icon) return null;
   try {

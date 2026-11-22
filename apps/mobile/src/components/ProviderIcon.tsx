@@ -7,7 +7,7 @@ import {
   providerInstanceInitials,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { useId, useState } from "react";
-import { resolveOfficialAcpRegistryIconUrl } from "@t3tools/contracts";
+import { OH_MY_PI_ICON_URL, resolveOfficialAcpRegistryIconUrl } from "@t3tools/contracts";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 import { AppText as Text } from "./ui/AppText";
 import { cn } from "../lib/cn";
@@ -85,6 +85,16 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
   if (props.provider === "acpRegistry") {
+    if (props.iconUrl === OH_MY_PI_ICON_URL) {
+      return (
+        <Image
+          source={{ uri: OH_MY_PI_ICON_URL }}
+          style={{ width: size, height: size }}
+          contentFit="contain"
+          cachePolicy="memory-disk"
+        />
+      );
+    }
     return <AcpRegistryProviderIcon color={mono} iconUrl={props.iconUrl} size={size} />;
   }
 

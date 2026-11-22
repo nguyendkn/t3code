@@ -1,0 +1,201 @@
+diff --git a/apps/web/src/components/settings/AddProviderInstanceDialog.tsx b/apps/web/src/components/settings/AddProviderInstanceDialog.tsx
+--- a/apps/web/src/components/settings/AddProviderInstanceDialog.tsx
++++ b/apps/web/src/components/settings/AddProviderInstanceDialog.tsx
+@@ -34,6 +34,7 @@
+ import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
+ import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
+ import { Button } from "../ui/button";
++import ompIcon from "../../assets/omp.svg";
+ import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
+ import { Dialog } from "../ui/dialog";
+ import { Badge } from "../ui/badge";
+@@ -361,17 +362,21 @@
+     setHasAttemptedSubmit(false);
+   };
+ 
+-  const handleLocalAcpConfiguration = () => {
++  const configureLocalAcp = (
++    label: string,
++    commandPath = "",
++    commandArgs: string[] = [],
++  ) => {
+     setDriver(ACP_REGISTRY_DRIVER_KIND);
+     setSelectedAcp(null);
+     setIsManualAcpConfiguration(true);
+     setConfigByDriver((existing) => ({
+       ...existing,
+-      [ACP_REGISTRY_DRIVER_KIND]: { source: "local", commandArgs: [] },
++      [ACP_REGISTRY_DRIVER_KIND]: { source: "local", commandPath, commandArgs },
+     }));
+     setIdentityByDriver((existing) =>
+       updateProviderIdentityDraft(existing, ACP_REGISTRY_DRIVER_KIND, {
+-        label: gt("Local ACP"),
++        label,
+         instanceIdOverride: null,
+       }),
+     );
+@@ -590,13 +595,23 @@
+                         </div>
+                       ) : (
+                         <>
++                          <Button
++                            disabled={isPreparingRegistryAgent}
++                            onClick={() => configureLocalAcp("Oh My Pi (OMP)", "omp", ["acp"])}
++                            size="sm"
++                            type="button"
++                            variant="outline"
++                          >
++                            <img src={ompIcon} alt="" className="size-4" />
++                            Oh My Pi (OMP)
++                          </Button>
+                           <AcpRegistrySearchStep
+                             environmentId={environmentId}
+                             registry={registry}
+                             providerInstances={settings.providerInstances}
+                             onPrepared={handleAcpPrepared}
+                             onManualConfiguration={handleManualAcpConfiguration}
+-                            onLocalConfiguration={handleLocalAcpConfiguration}
++                            onLocalConfiguration={() => configureLocalAcp(gt("Local ACP"))}
+                           />
+                           {isAcpRegistry && hasAttemptedSubmit && acpSelectionError ? (
+                             <p className="mt-2 text-2xs text-destructive">{acpSelectionError}</p>
+diff --git a/apps/web/src/assets/omp.svg b/apps/web/src/assets/omp.svg
+new file mode 100644
+--- /dev/null
++++ b/apps/web/src/assets/omp.svg
+@@ -0,0 +1,11 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
++  <defs>
++    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
++      <stop offset="0" stop-color="#ed4abf" />
++      <stop offset=".5" stop-color="#9b4dff" />
++      <stop offset="1" stop-color="#5ad8e6" />
++    </linearGradient>
++  </defs>
++  <rect width="64" height="64" rx="12" fill="#0f0a14" />
++  <path fill="url(#g)" d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z" />
++</svg>
+diff --git a/packages/contracts/src/acpRegistry.ts b/packages/contracts/src/acpRegistry.ts
+--- a/packages/contracts/src/acpRegistry.ts
++++ b/packages/contracts/src/acpRegistry.ts
+@@ -21,6 +21,8 @@
+   }
+   return `https://${ACP_REGISTRY_CDN_HOSTNAME}/registry/v1/latest/${agentId}.svg`;
+ }
++
++export const OH_MY_PI_ICON_URL = "https://omp.sh/favicon.svg";
+ 
+ export function resolveOfficialAcpRegistryIconUrl(icon: string | null | undefined): string | null {
+   if (!icon) return null;
+diff --git a/packages/provider-acp-registry/src/server/driver.ts b/packages/provider-acp-registry/src/server/driver.ts
+--- a/packages/provider-acp-registry/src/server/driver.ts
++++ b/packages/provider-acp-registry/src/server/driver.ts
+@@ -1,6 +1,7 @@
+ import {
+   officialAcpRegistryIconUrlForAgentId,
+   ProviderDriverKind,
++  OH_MY_PI_ICON_URL,
+   resolveOfficialAcpRegistryIconUrl,
+   TextGenerationError,
+   type AcpRegistryOperationError,
+@@ -293,7 +294,10 @@
+ ): ServerProvider {
+   const iconUrl =
+     input.settings.source === "local"
+-      ? null
++      ? input.settings.commandPath.split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.exe$/, "") ===
++          "omp" && input.settings.commandArgs[0] === "acp"
++        ? OH_MY_PI_ICON_URL
++        : null
+       : (resolveOfficialAcpRegistryIconUrl(input.probe?.probe.icon) ??
+         officialAcpRegistryIconUrlForAgentId(input.settings.agentId));
+   return {
+diff --git a/apps/web/src/providerInstances.ts b/apps/web/src/providerInstances.ts
+--- a/apps/web/src/providerInstances.ts
++++ b/apps/web/src/providerInstances.ts
+@@ -2,6 +2,7 @@
+ import {
+   DEFAULT_MODEL_BY_PROVIDER,
+   defaultInstanceIdForDriver,
++  OH_MY_PI_ICON_URL,
+   resolveProjectProviderInstanceEnabled,
+   type ModelSelection,
+   type ProjectId,
+@@ -171,7 +172,11 @@
+       ? (explicitInstance.config as Readonly<Record<string, unknown>>)
+       : null;
+   if (config?.source === "local") {
+-    return { ...entry, acpRegistryAgentId: undefined, acpRegistryIconUrl: undefined };
++    return {
++      ...entry,
++      acpRegistryAgentId: undefined,
++      acpRegistryIconUrl: entry.snapshot?.iconUrl === OH_MY_PI_ICON_URL ? OH_MY_PI_ICON_URL : undefined,
++    };
+   }
+   const agentId = config?.agentId;
+   const iconUrl = config?.registryIconUrl;
+diff --git a/apps/web/src/components/settings/ProviderInstanceCard.tsx b/apps/web/src/components/settings/ProviderInstanceCard.tsx
+--- a/apps/web/src/components/settings/ProviderInstanceCard.tsx
++++ b/apps/web/src/components/settings/ProviderInstanceCard.tsx
+@@ -995,7 +995,7 @@
+       }
+       acpRegistryIconUrl={
+         readConfigString(instance.config, "source") === "local"
+-          ? undefined
++          ? liveProvider?.iconUrl
+           : (readConfigString(instance.config, "registryIconUrl") ?? undefined)
+       }
+       showBadge={Boolean(accentColor)}
+diff --git a/apps/web/src/components/chat/ProviderInstanceIcon.tsx b/apps/web/src/components/chat/ProviderInstanceIcon.tsx
+--- a/apps/web/src/components/chat/ProviderInstanceIcon.tsx
++++ b/apps/web/src/components/chat/ProviderInstanceIcon.tsx
+@@ -6,7 +6,8 @@
+   providerInstanceInitials,
+ } from "@t3tools/client-runtime/state/provider-instance-display";
+ 
+-import { ProviderDriverKind } from "@t3tools/contracts";
++import { OH_MY_PI_ICON_URL, ProviderDriverKind } from "@t3tools/contracts";
++import ompIcon from "../../assets/omp.svg";
+ import {
+   AnthropicIcon,
+   AntigravityIcon,
+@@ -130,7 +131,9 @@
+       style={accentStyle}
+       data-provider-accent-color={accentColor}
+     >
+-      {isAcpRegistry ? (
++      {isAcpRegistry && props.acpRegistryIconUrl === OH_MY_PI_ICON_URL ? (
++        <img src={ompIcon} alt="" className={cn("size-5", iconClassName)} />
++      ) : isAcpRegistry ? (
+         <AcpRegistryAgentIcon
+           className={cn("size-5 rounded-none bg-transparent", iconClassName)}
+           fallbackClassName="size-full"
+diff --git a/apps/mobile/src/components/ProviderIcon.tsx b/apps/mobile/src/components/ProviderIcon.tsx
+--- a/apps/mobile/src/components/ProviderIcon.tsx
++++ b/apps/mobile/src/components/ProviderIcon.tsx
+@@ -7,7 +7,7 @@
+   providerInstanceInitials,
+ } from "@t3tools/client-runtime/state/provider-instance-display";
+ import { useId, useState } from "react";
+-import { resolveOfficialAcpRegistryIconUrl } from "@t3tools/contracts";
++import { OH_MY_PI_ICON_URL, resolveOfficialAcpRegistryIconUrl } from "@t3tools/contracts";
+ import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
+ import { AppText as Text } from "./ui/AppText";
+ import { cn } from "../lib/cn";
+@@ -85,6 +85,16 @@
+     );
+   }
+   if (props.provider === "acpRegistry") {
++    if (props.iconUrl === OH_MY_PI_ICON_URL) {
++      return (
++        <Image
++          source={{ uri: OH_MY_PI_ICON_URL }}
++          style={{ width: size, height: size }}
++          contentFit="contain"
++          cachePolicy="memory-disk"
++        />
++      );
++    }
+     return <AcpRegistryProviderIcon color={mono} iconUrl={props.iconUrl} size={size} />;
+   }
+ 

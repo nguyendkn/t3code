@@ -1,6 +1,7 @@
 import {
   officialAcpRegistryIconUrlForAgentId,
   ProviderDriverKind,
+  OH_MY_PI_ICON_URL,
   resolveOfficialAcpRegistryIconUrl,
   TextGenerationError,
   type AcpRegistryOperationError,
@@ -293,7 +294,13 @@ function baseSnapshot(
 ): ServerProvider {
   const iconUrl =
     input.settings.source === "local"
-      ? null
+      ? input.settings.commandPath
+          .split(/[\\/]/)
+          .at(-1)
+          ?.toLowerCase()
+          .replace(/\.exe$/, "") === "omp" && input.settings.commandArgs[0] === "acp"
+        ? OH_MY_PI_ICON_URL
+        : null
       : (resolveOfficialAcpRegistryIconUrl(input.probe?.probe.icon) ??
         officialAcpRegistryIconUrlForAgentId(input.settings.agentId));
   return {

@@ -995,7 +995,7 @@ export function ProviderInstanceCard({
       }
       acpRegistryIconUrl={
         readConfigString(instance.config, "source") === "local"
-          ? undefined
+          ? liveProvider?.iconUrl
           : (readConfigString(instance.config, "registryIconUrl") ?? undefined)
       }
       showBadge={Boolean(accentColor)}

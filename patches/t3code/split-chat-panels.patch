@@ -1,0 +1,679 @@
+diff --git a/apps/web/src/components/ChatView.tsx b/apps/web/src/components/ChatView.tsx
+--- a/apps/web/src/components/ChatView.tsx
++++ b/apps/web/src/components/ChatView.tsx
+@@ -314,6 +314,15 @@
+ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
+ import { resolveScrollToEndClearance } from "./composerFooterLayout";
+ import { ChatHeader } from "./chat/ChatHeader";
++import {
++  MAIN_CHAT_PANE,
++  chatPaneBounds,
++  closeChatPane,
++  splitChatPane,
++  type ChatSplitDirection,
++  type ChatSplitLayout,
++} from "./chat/chatSplitLayout";
++import SideThreadPane from "./chat/SideThreadPane";
+ import { useSideChat } from "./chat/useSideChat";
+ import { sideThreadComposer, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
+ import { useOpenSurfaceInMainView } from "../hooks/useOpenSurfaceInMainView";
+@@ -321,6 +330,7 @@
+ import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
+ import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
+ import {
++  ChatSplitControls,
+   PanelLayoutControls,
+   type PanelLayoutControlsProps,
+   RightPanelMaximizeControl,
+@@ -2999,6 +3009,31 @@
+                   )
+                 ? gt("Available once the thread's worktree is set up.")
+                 : null;
++  const [chatLayouts, setChatLayouts] = useState<Record<string, ChatSplitLayout>>({});
++  const chatLayout = chatLayouts[routeThreadKey] ?? MAIN_CHAT_PANE;
++  const hasChatSplits = chatLayout.kind === "group";
++  const [openingChatSplit, setOpeningChatSplit] = useState(false);
++  const deleteUnusedSplit = useAtomCommand(threadEnvironment.delete, "side chat delete");
++  const showChatSplitControls = sideChat.available && sideChatDisabledReason === null;
++  const openChatSplit = useStableCallback(
++    (direction: ChatSplitDirection, paneId: ThreadId | null) => {
++      if (openingChatSplit || !showChatSplitControls) return;
++      setOpeningChatSplit(true);
++      void sideChat
++        .open(undefined, (ref) => {
++          setChatLayouts((previous) => {
++            const layout = previous[routeThreadKey] ?? MAIN_CHAT_PANE;
++            const next = splitChatPane(layout, paneId, ref.threadId, direction);
++            return {
++              ...previous,
++              [routeThreadKey]:
++                next === layout ? splitChatPane(layout, null, ref.threadId, direction) : next,
++            };
++          });
++        })
++        .finally(() => setOpeningChatSplit(false));
++    },
++  );
+   const openSideChatStable = useStableCallback(() => void sideChat.open());
+   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
+   const sendSideChatStable = useStableCallback(sideChat.open);
+@@ -3460,12 +3495,21 @@
+   const panelToggleControls = (
+     <PanelLayoutControls
+       {...panelToggleControlProps}
++      chatSplit={
++        showChatSplitControls
++          ? {
++              pending: openingChatSplit,
++              onSplit: (direction) => openChatSplit(direction, null),
++            }
++          : undefined
++      }
+       showThreadPanelControl={!inlineRightPanelOwnsTitleBar}
+     />
+   );
+   const threadPanelHeaderControl = <ThreadPanelHeaderControl {...panelToggleControlProps} />;
+   const panelLayoutControls = (
+     <WorkspaceTitlebarControls
++      withinChatPane={hasChatSplits}
+       showMaximizeControl={!shouldUsePlanSidebarSheet}
+       rightPanelOpen={rightPanelOpen}
+       animationsActive={panelAnimationsActive}
+@@ -3521,10 +3565,13 @@
+               COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
+             )}
+           >
+-            {isElectron && rightPanelControlsAtRoot ? (
++            {isElectron && rightPanelControlsAtRoot && !hasChatSplits ? (
+               <span
+                 aria-hidden
+-                className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
++                className={cn(
++                  "pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] [-webkit-app-region:no-drag]",
++                  showChatSplitControls ? "w-52" : "w-28",
++                )}
+               />
+             ) : null}
+             {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
+@@ -3539,6 +3586,7 @@
+               parentThreadLink={headerParentThreadLink}
+               onOpenThread={onOpenRelatedThreadStable}
+               rightPanelOpen={inlineRightPanelOwnsTitleBar}
++              showChatSplitControls={showChatSplitControls}
+               onNewThreadInProject={handleNewThreadInActiveProjectStable}
+               {...(activeDraftLogicalProjectKey
+                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
+@@ -4234,6 +4282,46 @@
+       <ExpandedImageDialogHost threadKey={routeThreadKey} />
+     </div>
+   );
++  const renderChatSplit = (splitThreadId: ThreadId) => {
++    if (!activeThreadRef) return null;
++    const removeSplit = () => {
++      setChatLayouts((previous) => {
++        const layout = previous[routeThreadKey];
++        if (!layout) return previous;
++        return {
++          ...previous,
++          [routeThreadKey]: closeChatPane(layout, splitThreadId) ?? MAIN_CHAT_PANE,
++        };
++      });
++    };
++    return (
++      <SideThreadPane
++        parentRef={activeThreadRef}
++        parentPanel={sideChatParentPanel}
++        surface={{ id: `thread:${splitThreadId}`, kind: "thread", threadId: splitThreadId }}
++        splitControls={
++          showChatSplitControls ? (
++            <ChatSplitControls
++              compact
++              pending={openingChatSplit}
++              onSplit={(direction) => openChatSplit(direction, splitThreadId)}
++            />
++          ) : null
++        }
++        onDeleted={removeSplit}
++        onClose={() => {
++          removeSplit();
++          if (canOperateThread) {
++            void deleteUnusedSplit({
++              environmentId,
++              input: { threadId: splitThreadId, onlyIfUnused: true },
++            });
++          }
++        }}
++      />
++    );
++  };
++
+   return (
+     <FileMetadataThreadProvider
+       threadRef={activeThreadRef}
+@@ -4241,7 +4329,30 @@
+       checkpoints={serverProjection?.checkpoints}
+       checkpointScopes={serverProjection?.checkpointScopes}
+     >
+-      {content}
++      {embedded ? (
++        content
++      ) : (
++        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-border">
++          {chatPaneBounds(chatLayout).map(({ id, left, top, width, height }) => (
++            <div
++              key={id ?? "main"}
++              className={cn(
++                "absolute flex min-h-0 min-w-0 flex-col overflow-hidden bg-background",
++                left > 0 && "border-l border-border",
++                top > 0 && "border-t border-border",
++              )}
++              style={{
++                left: `${left}%`,
++                top: `${top}%`,
++                width: `${width}%`,
++                height: `${height}%`,
++              }}
++            >
++              {id === null ? content : renderChatSplit(id)}
++            </div>
++          ))}
++        </div>
++      )}
+     </FileMetadataThreadProvider>
+   );
+ }
+diff --git a/apps/web/src/components/chat/ChatHeader.tsx b/apps/web/src/components/chat/ChatHeader.tsx
+--- a/apps/web/src/components/chat/ChatHeader.tsx
++++ b/apps/web/src/components/chat/ChatHeader.tsx
+@@ -55,6 +55,7 @@
+   parentThreadLink: { threadId: ThreadId; title: string } | null;
+   onOpenThread: (threadId: ThreadId) => void;
+   rightPanelOpen: boolean;
++  showChatSplitControls?: boolean;
+   onNewThreadInProject: () => void;
+   onOpenProjectSettings?: (() => void) | undefined;
+   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
+@@ -80,6 +81,7 @@
+   parentThreadLink,
+   onOpenThread,
+   rightPanelOpen,
++  showChatSplitControls = false,
+   onNewThreadInProject,
+   onOpenProjectSettings,
+   onFindInThread,
+@@ -254,6 +256,7 @@
+       className={cn(
+         "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
+         rightPanelOpen ? "pr-10" : "pr-24",
++        !rightPanelOpen && showChatSplitControls && "pr-48",
+       )}
+       onContextMenu={handleHeaderContextMenu}
+     >
+diff --git a/apps/web/src/components/chat/PanelLayoutControls.tsx b/apps/web/src/components/chat/PanelLayoutControls.tsx
+--- a/apps/web/src/components/chat/PanelLayoutControls.tsx
++++ b/apps/web/src/components/chat/PanelLayoutControls.tsx
+@@ -1,5 +1,7 @@
+ import {
+   PanelBottomIcon,
++  PanelLeftIcon,
++  Rows2Icon,
+   PanelRightIcon,
+   SquareMenuIcon,
+   Maximize2Icon,
+@@ -11,6 +13,7 @@
+ import { cn } from "~/lib/utils";
+ 
+ import type { ThreadPanelPresentation } from "../../rightPanelLayout";
++import { Button } from "../ui/button";
+ import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
+ import { useMobileSidebarSheetMounted } from "../ui/sidebar";
+ import { Toggle } from "../ui/toggle";
+@@ -19,7 +22,16 @@
+ /** Matches the right inset of `ThreadPanelHeaderControl`. */
+ const THREAD_PANEL_HEADER_INSET_PX = 12;
+ 
++import type { ChatSplitDirection } from "./chatSplitLayout";
++
++interface ChatSplitControlsProps {
++  readonly pending: boolean;
++  readonly onSplit: (direction: ChatSplitDirection) => void;
++  readonly compact?: boolean;
++}
++
+ export interface PanelLayoutControlsProps {
++  chatSplit?: ChatSplitControlsProps | undefined;
+   showThreadPanelControl?: boolean;
+   showTerminalControl?: boolean;
+   showRightPanelControl?: boolean;
+@@ -40,6 +52,7 @@
+ }
+ 
+ export const PanelLayoutControls = memo(function PanelLayoutControls({
++  chatSplit,
+   showThreadPanelControl = true,
+   showTerminalControl = true,
+   showRightPanelControl = true,
+@@ -93,6 +106,7 @@
+       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
+       data-panel-layout-controls
+     >
++      {chatSplit ? <ChatSplitControls {...chatSplit} /> : null}
+       {showThreadPanelControl ? threadPanelControl : null}
+       {showTerminalControl ? (
+         <Tooltip>
+@@ -147,6 +161,32 @@
+   );
+ });
+ 
++export function ChatSplitControls({ pending, onSplit, compact }: ChatSplitControlsProps) {
++  const gt = useGT();
++  const actions = [
++    { direction: "left", label: gt("Split left"), Icon: PanelLeftIcon },
++    { direction: "right", label: gt("Split right"), Icon: PanelRightIcon },
++    { direction: "bottom", label: gt("Split bottom"), Icon: Rows2Icon },
++  ] as const;
++
++  return actions.map(({ direction, label, Icon }) => (
++    <Tooltip key={direction}>
++      <TooltipTrigger render={<span className="flex shrink-0" />}>
++        <Button
++          variant="ghost"
++          size={compact ? "icon-xs" : "icon-sm"}
++          aria-label={label}
++          disabled={pending}
++          onClick={() => onSplit(direction)}
++        >
++          <Icon className="size-4" />
++        </Button>
++      </TooltipTrigger>
++      <TooltipPopup side="bottom">{label}</TooltipPopup>
++    </Tooltip>
++  ));
++}
++
+ export const RightPanelMaximizeControl = memo(function RightPanelMaximizeControl({
+   maximized,
+   onToggle,
+@@ -192,13 +232,19 @@
+       )}
+       data-workspace-titlebar-controls
+     >
+-      <PanelLayoutControls {...props} showTerminalControl={false} showRightPanelControl={false} />
++      <PanelLayoutControls
++        {...props}
++        chatSplit={undefined}
++        showTerminalControl={false}
++        showRightPanelControl={false}
++      />
+     </div>
+   );
+ }
+ 
+ /** The window's top-right panel controls, with the maximize toggle while the panel is open. */
+ export function WorkspaceTitlebarControls(props: {
++  readonly withinChatPane?: boolean;
+   readonly showMaximizeControl: boolean;
+   readonly rightPanelOpen: boolean;
+   readonly animationsActive: boolean;
+@@ -233,7 +279,10 @@
+     <div
+       ref={controlsRef}
+       className={cn(
+-        "pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]",
++        "pointer-events-none z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]",
++        props.withinChatPane
++          ? "absolute top-0 right-3"
++          : "fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)]",
+         mobileSidebarSheetMounted && "hidden",
+       )}
+       data-workspace-titlebar-controls
+diff --git a/apps/web/src/components/chat/SideThreadPane.tsx b/apps/web/src/components/chat/SideThreadPane.tsx
+--- a/apps/web/src/components/chat/SideThreadPane.tsx
++++ b/apps/web/src/components/chat/SideThreadPane.tsx
+@@ -10,7 +10,7 @@
+ import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
+ import { T, useGT } from "gt-react";
+ import { Trash2Icon, XIcon } from "lucide-react";
+-import { useEffect, useState } from "react";
++import { type ReactNode, useEffect, useState } from "react";
+ 
+ import { useComposerDraftStore } from "../../composerDraftStore";
+ import { ComposerHandleContext } from "../../composerHandleContext";
+@@ -46,6 +46,8 @@
+   readonly surface: ThreadSurface;
+   readonly parentPanel: SideChatParentPanel;
+   readonly onClose: () => void;
++  readonly onDeleted?: () => void;
++  readonly splitControls?: ReactNode;
+ }) {
+   const { parentRef, surface } = props;
+   const { threadId } = surface;
+@@ -118,7 +120,11 @@
+     if (result._tag === "Success") {
+       releaseComposerDraftUploads(threadRef);
+       useComposerDraftStore.getState().clearDraftThread(threadRef);
+-      useRightPanelStore.getState().closeSurface(parentRef, surface.id);
++      if (props.onDeleted) {
++        props.onDeleted();
++      } else {
++        useRightPanelStore.getState().closeSurface(parentRef, surface.id);
++      }
+     } else if (!isAtomCommandInterrupted(result)) {
+       const error = squashAtomCommandFailure(result);
+       toastManager.add({
+@@ -145,7 +151,7 @@
+       className="flex h-full min-h-0 flex-col"
+     >
+       {isSideChat ? (
+-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border pr-1 pl-3">
++        <div className="flex min-h-9 shrink-0 flex-wrap items-center gap-1 border-b border-border pr-1 pl-3">
+           <h2 className="min-w-0 flex-1 truncate text-xs font-medium">{title}</h2>
+           <Tooltip>
+             <TooltipTrigger
+@@ -166,6 +172,7 @@
+                 : gt("Available after the first message.")}
+             </TooltipPopup>
+           </Tooltip>
++          {props.splitControls}
+           <Button
+             variant="ghost"
+             size="icon-xs"
+diff --git a/apps/web/src/components/chat/useSideChat.ts b/apps/web/src/components/chat/useSideChat.ts
+--- a/apps/web/src/components/chat/useSideChat.ts
++++ b/apps/web/src/components/chat/useSideChat.ts
+@@ -56,7 +56,11 @@
+     const error = squashAtomCommandFailure(failure);
+     input.onError(thrownErrorMessage(error, m) ?? fallback);
+   };
+-  const start = async (threadRef: ScopedThreadRef, message: SideChatMessage | undefined) => {
++  const start = async (
++    threadRef: ScopedThreadRef,
++    message: SideChatMessage | undefined,
++    showThread: ((ref: ScopedThreadRef) => void) | undefined,
++  ) => {
+     const { runtimeMode, modelSelection } = input.readSettings();
+     const targetThreadId = newThreadId();
+     const fork = await forkSideChat({
+@@ -120,14 +124,18 @@
+     } else if (modelSelection !== undefined) {
+       useComposerDraftStore.getState().setModelSelection(targetRef, modelSelection);
+     }
+-    useRightPanelStore.getState().openThread(threadRef, targetThreadId);
++    if (showThread) {
++      showThread(targetRef);
++    } else {
++      useRightPanelStore.getState().openThread(threadRef, targetThreadId);
++    }
+     return true;
+   };
+-  const open = async (message?: SideChatMessage) => {
++  const open = async (message?: SideChatMessage, showThread?: (ref: ScopedThreadRef) => void) => {
+     const { threadRef } = input;
+     if (!threadRef || pendingRef.current) return false;
+     pendingRef.current = true;
+-    return start(threadRef, message).finally(() => {
++    return start(threadRef, message, showThread).finally(() => {
+       pendingRef.current = false;
+     });
+   };
+diff --git a/apps/web/src/i18n/translations/de.json b/apps/web/src/i18n/translations/de.json
+--- a/apps/web/src/i18n/translations/de.json
++++ b/apps/web/src/i18n/translations/de.json
+@@ -3902,6 +3902,9 @@
+   "8413f3e7f703f14e": "Thread-Detailpanel umschalten",
+   "a728e041b203714a": "Thread-Details umschalten ({shortcut})",
+   "5417d84fba7b6b84": "Thread-Details umschalten",
++  "9f273a0eacda5a05": "Links teilen",
++  "80436754eec0a2fe": "Rechts teilen",
++  "f8fa04ffd1500b0b": "Unten teilen",
+   "586edda3a01b9305": "Terminalbereich umschalten",
+   "d395686a462b77d2": "Terminalbereich umschalten ({shortcut})",
+   "c2fdb28a7ae3921b": "Terminalbereich ist nicht verfügbar",
+diff --git a/apps/web/src/i18n/translations/en.json b/apps/web/src/i18n/translations/en.json
+--- a/apps/web/src/i18n/translations/en.json
++++ b/apps/web/src/i18n/translations/en.json
+@@ -3900,6 +3900,9 @@
+   "8413f3e7f703f14e": "Toggle thread details panel",
+   "a728e041b203714a": "Toggle thread details ({shortcut})",
+   "5417d84fba7b6b84": "Toggle thread details",
++  "9f273a0eacda5a05": "Split left",
++  "80436754eec0a2fe": "Split right",
++  "f8fa04ffd1500b0b": "Split bottom",
+   "586edda3a01b9305": "Toggle terminal drawer",
+   "d395686a462b77d2": "Toggle terminal drawer ({shortcut})",
+   "c2fdb28a7ae3921b": "Terminal drawer is unavailable",
+diff --git a/apps/web/src/i18n/translations/es.json b/apps/web/src/i18n/translations/es.json
+--- a/apps/web/src/i18n/translations/es.json
++++ b/apps/web/src/i18n/translations/es.json
+@@ -3898,6 +3898,9 @@
+   "8413f3e7f703f14e": "Mostrar u ocultar el panel de detalles del hilo",
+   "a728e041b203714a": "Mostrar u ocultar los detalles del hilo ({shortcut})",
+   "5417d84fba7b6b84": "Mostrar u ocultar los detalles del hilo",
++  "9f273a0eacda5a05": "Dividir a la izquierda",
++  "80436754eec0a2fe": "Dividir a la derecha",
++  "f8fa04ffd1500b0b": "Dividir hacia abajo",
+   "586edda3a01b9305": "Mostrar u ocultar el panel de terminal",
+   "d395686a462b77d2": "Mostrar u ocultar el panel de terminal ({shortcut})",
+   "c2fdb28a7ae3921b": "El panel de terminal no está disponible",
+diff --git a/apps/web/src/i18n/translations/fr.json b/apps/web/src/i18n/translations/fr.json
+--- a/apps/web/src/i18n/translations/fr.json
++++ b/apps/web/src/i18n/translations/fr.json
+@@ -3899,6 +3899,9 @@
+   "8413f3e7f703f14e": "Afficher/masquer le panneau des détails du fil",
+   "a728e041b203714a": "Afficher/masquer les détails du fil ({shortcut})",
+   "5417d84fba7b6b84": "Afficher/masquer les détails du fil",
++  "9f273a0eacda5a05": "Scinder à gauche",
++  "80436754eec0a2fe": "Scinder à droite",
++  "f8fa04ffd1500b0b": "Scinder vers le bas",
+   "586edda3a01b9305": "Afficher/masquer le tiroir du terminal",
+   "d395686a462b77d2": "Afficher/masquer le tiroir du terminal ({shortcut})",
+   "c2fdb28a7ae3921b": "Le tiroir du terminal est indisponible",
+diff --git a/apps/web/src/i18n/translations/ja.json b/apps/web/src/i18n/translations/ja.json
+--- a/apps/web/src/i18n/translations/ja.json
++++ b/apps/web/src/i18n/translations/ja.json
+@@ -3892,6 +3892,9 @@
+   "8413f3e7f703f14e": "スレッドの詳細パネルの切り替え",
+   "a728e041b203714a": "スレッドの詳細の切り替え ({shortcut})",
+   "5417d84fba7b6b84": "スレッドの詳細の切り替え",
++  "9f273a0eacda5a05": "左に分割",
++  "80436754eec0a2fe": "右に分割",
++  "f8fa04ffd1500b0b": "下に分割",
+   "586edda3a01b9305": "ターミナルドロワーの切り替え",
+   "d395686a462b77d2": "ターミナルドロワーの切り替え ({shortcut})",
+   "c2fdb28a7ae3921b": "ターミナルドロワーを利用できません",
+diff --git a/apps/web/src/i18n/translations/ko.json b/apps/web/src/i18n/translations/ko.json
+--- a/apps/web/src/i18n/translations/ko.json
++++ b/apps/web/src/i18n/translations/ko.json
+@@ -3890,6 +3890,9 @@
+   "8413f3e7f703f14e": "스레드 세부 정보 패널 전환",
+   "a728e041b203714a": "스레드 세부 정보 전환({shortcut})",
+   "5417d84fba7b6b84": "스레드 세부 정보 전환",
++  "9f273a0eacda5a05": "왼쪽으로 분할",
++  "80436754eec0a2fe": "오른쪽으로 분할",
++  "f8fa04ffd1500b0b": "아래로 분할",
+   "586edda3a01b9305": "터미널 서랍 전환",
+   "d395686a462b77d2": "터미널 서랍 전환({shortcut})",
+   "c2fdb28a7ae3921b": "터미널 서랍을 사용할 수 없습니다",
+diff --git a/apps/web/src/i18n/translations/pt-BR.json b/apps/web/src/i18n/translations/pt-BR.json
+--- a/apps/web/src/i18n/translations/pt-BR.json
++++ b/apps/web/src/i18n/translations/pt-BR.json
+@@ -3899,6 +3899,9 @@
+   "8413f3e7f703f14e": "Alternar painel de detalhes da thread",
+   "a728e041b203714a": "Alternar detalhes da thread ({shortcut})",
+   "5417d84fba7b6b84": "Alternar detalhes da thread",
++  "9f273a0eacda5a05": "Dividir à esquerda",
++  "80436754eec0a2fe": "Dividir à direita",
++  "f8fa04ffd1500b0b": "Dividir para baixo",
+   "586edda3a01b9305": "Alternar gaveta do terminal",
+   "d395686a462b77d2": "Alternar gaveta do terminal ({shortcut})",
+   "c2fdb28a7ae3921b": "A gaveta do terminal não está disponível",
+diff --git a/apps/web/src/i18n/translations/ru.json b/apps/web/src/i18n/translations/ru.json
+--- a/apps/web/src/i18n/translations/ru.json
++++ b/apps/web/src/i18n/translations/ru.json
+@@ -3899,6 +3899,9 @@
+   "8413f3e7f703f14e": "Показать/скрыть панель сведений о треде",
+   "a728e041b203714a": "Показать/скрыть сведения о треде ({shortcut})",
+   "5417d84fba7b6b84": "Показать/скрыть сведения о треде",
++  "9f273a0eacda5a05": "Разделить влево",
++  "80436754eec0a2fe": "Разделить вправо",
++  "f8fa04ffd1500b0b": "Разделить вниз",
+   "586edda3a01b9305": "Показать/скрыть панель терминала",
+   "d395686a462b77d2": "Показать/скрыть панель терминала ({shortcut})",
+   "c2fdb28a7ae3921b": "Панель терминала недоступна",
+diff --git a/apps/web/src/i18n/translations/sv.json b/apps/web/src/i18n/translations/sv.json
+--- a/apps/web/src/i18n/translations/sv.json
++++ b/apps/web/src/i18n/translations/sv.json
+@@ -3899,6 +3899,9 @@
+   "8413f3e7f703f14e": "Växla panelen med tråddetaljer",
+   "a728e041b203714a": "Växla tråddetaljer ({shortcut})",
+   "5417d84fba7b6b84": "Växla tråddetaljer",
++  "9f273a0eacda5a05": "Dela åt vänster",
++  "80436754eec0a2fe": "Dela åt höger",
++  "f8fa04ffd1500b0b": "Dela nedåt",
+   "586edda3a01b9305": "Växla terminallådan",
+   "d395686a462b77d2": "Växla terminallådan ({shortcut})",
+   "c2fdb28a7ae3921b": "Terminallådan är inte tillgänglig",
+diff --git a/apps/web/src/i18n/translations/zh.json b/apps/web/src/i18n/translations/zh.json
+--- a/apps/web/src/i18n/translations/zh.json
++++ b/apps/web/src/i18n/translations/zh.json
+@@ -3904,6 +3904,9 @@
+   "8413f3e7f703f14e": "切换会话详情面板",
+   "a728e041b203714a": "切换会话详情 ({shortcut})",
+   "5417d84fba7b6b84": "切换会话详情",
++  "9f273a0eacda5a05": "向左拆分",
++  "80436754eec0a2fe": "向右拆分",
++  "f8fa04ffd1500b0b": "向下拆分",
+   "586edda3a01b9305": "切换终端抽屉",
+   "d395686a462b77d2": "切换终端抽屉 ({shortcut})",
+   "c2fdb28a7ae3921b": "终端抽屉不可用",
+diff --git a/apps/web/src/components/chat/chatSplitLayout.ts b/apps/web/src/components/chat/chatSplitLayout.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/src/components/chat/chatSplitLayout.ts
+@@ -0,0 +1,78 @@
++import type { ThreadId } from "@t3tools/contracts";
++
++export type ChatSplitDirection = "left" | "right" | "bottom";
++type PaneId = ThreadId | null;
++type Axis = "horizontal" | "vertical";
++
++export type ChatSplitLayout =
++  | { readonly kind: "pane"; readonly id: PaneId }
++  | { readonly kind: "group"; readonly axis: Axis; readonly children: readonly ChatSplitLayout[] };
++
++export const MAIN_CHAT_PANE: ChatSplitLayout = { kind: "pane", id: null };
++
++export function splitChatPane(
++  layout: ChatSplitLayout,
++  target: PaneId,
++  id: ThreadId,
++  direction: ChatSplitDirection,
++): ChatSplitLayout {
++  const axis = direction === "bottom" ? "vertical" : "horizontal";
++  const newPane = { kind: "pane", id } as const;
++  const before = direction === "left";
++  if (layout.kind === "pane") {
++    if (layout.id !== target) return layout;
++    return { kind: "group", axis, children: before ? [newPane, layout] : [layout, newPane] };
++  }
++
++  if (layout.axis === axis) {
++    const index = layout.children.findIndex(
++      (child) => child.kind === "pane" && child.id === target,
++    );
++    if (index !== -1) {
++      const children = layout.children.slice();
++      children.splice(index + (before ? 0 : 1), 0, newPane);
++      return { ...layout, children };
++    }
++  }
++
++  const children = layout.children.map((child) => splitChatPane(child, target, id, direction));
++  return children.some((child, index) => child !== layout.children[index])
++    ? { ...layout, children }
++    : layout;
++}
++
++export function closeChatPane(layout: ChatSplitLayout, id: ThreadId): ChatSplitLayout | null {
++  if (layout.kind === "pane") return layout.id === id ? null : layout;
++  const children = layout.children.flatMap((child) => {
++    const next = closeChatPane(child, id);
++    return next === null ? [] : [next];
++  });
++  if (children.length <= 1) return children[0] ?? null;
++  return { ...layout, children };
++}
++
++interface PaneBounds {
++  readonly left: number;
++  readonly top: number;
++  readonly width: number;
++  readonly height: number;
++}
++
++export function chatPaneBounds(
++  layout: ChatSplitLayout,
++  bounds: PaneBounds = { left: 0, top: 0, width: 100, height: 100 },
++): readonly (PaneBounds & { readonly id: PaneId })[] {
++  if (layout.kind === "pane") return [{ ...bounds, id: layout.id }];
++
++  const horizontal = layout.axis === "horizontal";
++  const width = horizontal ? bounds.width / layout.children.length : bounds.width;
++  const height = horizontal ? bounds.height : bounds.height / layout.children.length;
++  return layout.children.flatMap((child, index) =>
++    chatPaneBounds(child, {
++      left: bounds.left + (horizontal ? width * index : 0),
++      top: bounds.top + (horizontal ? 0 : height * index),
++      width,
++      height,
++    }),
++  );
++}
+diff --git a/apps/web/src/components/chat/chatSplitLayout.test.ts b/apps/web/src/components/chat/chatSplitLayout.test.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/web/src/components/chat/chatSplitLayout.test.ts
+@@ -0,0 +1,43 @@
++import { ThreadId } from "@t3tools/contracts";
++import { describe, expect, it } from "vite-plus/test";
++
++import { MAIN_CHAT_PANE, chatPaneBounds, closeChatPane, splitChatPane } from "./chatSplitLayout";
++
++const left = ThreadId.make("left");
++const right = ThreadId.make("right");
++const bottom = ThreadId.make("bottom");
++const lower = ThreadId.make("lower");
++
++describe("chat split layout", () => {
++  it("splits only the target pane vertically and restores it when the new pane closes", () => {
++    const columns = splitChatPane(MAIN_CHAT_PANE, null, left, "left");
++    const mixed = splitChatPane(columns, left, bottom, "bottom");
++
++    expect(chatPaneBounds(mixed)).toEqual([
++      { id: left, left: 0, top: 0, width: 50, height: 50 },
++      { id: bottom, left: 0, top: 50, width: 50, height: 50 },
++      { id: null, left: 50, top: 0, width: 50, height: 100 },
++    ]);
++    expect(closeChatPane(mixed, bottom)).toEqual(columns);
++  });
++
++  it("shares the available space equally between panes on the same axis", () => {
++    const leftSplit = splitChatPane(MAIN_CHAT_PANE, null, left, "left");
++    const columns = splitChatPane(leftSplit, null, right, "right");
++    expect(chatPaneBounds(columns).map(({ id, width }) => [id, width])).toEqual([
++      [left, 100 / 3],
++      [null, 100 / 3],
++      [right, 100 / 3],
++    ]);
++
++    const bottomSplit = splitChatPane(columns, right, bottom, "bottom");
++    const nested = splitChatPane(bottomSplit, bottom, lower, "bottom");
++    expect(chatPaneBounds(nested).map(({ id, height }) => [id, height])).toEqual([
++      [left, 100],
++      [null, 100],
++      [right, 100 / 3],
++      [bottom, 100 / 3],
++      [lower, 100 / 3],
++    ]);
++  });
++});
